@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-from bot_core import handle_update
+from bot_core import handle_update, run_autoscan
 
 app = Flask(__name__)
 
@@ -22,6 +22,12 @@ def webhook():
     except Exception as e:
         logging.error(f"Error in webhook: {e}", exc_info=True)
         return jsonify({'ok': False}), 500
+
+@app.route('/cron/autoscan', methods=['GET'])
+def cron_autoscan():
+    logging.info("Cron autoscan triggered")
+    run_autoscan()
+    return "OK", 200
 
 @app.route('/', methods=['GET'])
 def index():
