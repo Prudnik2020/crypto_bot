@@ -2,7 +2,6 @@ import os
 import sqlite3
 import logging
 import json
-import time
 from datetime import datetime, timedelta
 import requests
 import ccxt
@@ -26,7 +25,7 @@ SPREAD_THRESHOLD = 0.1
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
-# ---------- Биржи и шаблоны ссылок ----------
+# ---------- Биржи и шаблоны ссылок (не используются в сообщениях, но оставлены для совместимости) ----------
 EXCHANGES = {
     'kucoin': {
         'inst': ccxt.kucoin({'enableRateLimit': True}),
@@ -209,20 +208,12 @@ def update_network_data():
     currency_data = all_networks
     logging.info(f"📦 Всего активов с данными сетей: {len(currency_data)}")
 
-# Глобальный словарь с данными сетей
 currency_data = {}
-update_network_data()   # при ошибках загрузки словарь останется пустым
+update_network_data()
 
-# ---------- Проверка возможности перевода (теперь с запасным вариантом) ----------
 def check_transfer_possible(buy_ex, sell_ex, symbol):
-    """
-    Проверяет, есть ли у актива общая сеть на обеих биржах.
-    Если данные о сетях не загружены (currency_data пуст), считаем, что перевод возможен.
-    """
-    # Если словарь с сетями пуст (ошибка загрузки), пропускаем проверку
     if not currency_data:
         return True, "?"
-
     base = symbol.split('/')[0]
     if base not in currency_data:
         return False, None
@@ -253,7 +244,7 @@ def fetch_prices(exchange_name, exchange):
         logging.error(f"Ошибка получения тикеров с {exchange_name}: {e}")
     return prices
 
-# ---------- Основной сканер (с проверкой сетей) ----------
+# ---------- Основной сканер ----------
 def scan_market():
     opportunities = []
     kucoin_prices = fetch_prices('kucoin', EXCHANGES['kucoin']['inst'])
@@ -276,7 +267,6 @@ def scan_market():
         spread_kucoin_to_mexc = (price_mexc - price_kucoin) / price_kucoin * 100
         spread_mexc_to_kucoin = (price_kucoin - price_mexc) / price_mexc * 100
 
-        # Проверяем возможность перевода и общую сеть
         possible, network = check_transfer_possible('kucoin', 'mexc', symbol)
 
         if possible and spread_kucoin_to_mexc > SPREAD_THRESHOLD:
@@ -287,7 +277,8 @@ def scan_market():
                 'sell_exchange': 'mexc',
                 'network': network,
                 'buy_price': price_kucoin,
-                'sell_price': price_mexc
+                'sell_price': price_mexc,
+                'volume': kucoin['volume']
             })
         elif possible and spread_mexc_to_kucoin > SPREAD_THRESHOLD:
             opportunities.append({
@@ -297,40 +288,50 @@ def scan_market():
                 'sell_exchange': 'kucoin',
                 'network': network,
                 'buy_price': price_mexc,
-                'sell_price': price_kucoin
+                'sell_price': price_kucoin,
+                'volume': mexc['volume']
             })
 
     opportunities.sort(key=lambda x: x['spread'], reverse=True)
     return opportunities
 
+# ---------- Форматирование сообщения (новый дизайн) ----------
 def format_message(opportunities):
     if not opportunities:
         return None
 
-    lines = ["✅ Найдены арбитражные возможности:\n"]
-    for opp in opportunities[:10]:
+    lines = ["<b>ТОП-7 Возможностей (Вывод открыт:)</b>\n"]
+    for opp in opportunities[:7]:
         pair = opp['pair']
         spread = opp['spread']
         buy_ex = opp['buy_exchange']
         sell_ex = opp['sell_exchange']
         network = opp.get('network', '—')
-        buy_link = EXCHANGES[buy_ex]['url'].format(pair.split('/')[0])
-        sell_link = EXCHANGES[sell_ex]['url'].format(pair.split('/')[0])
+        buy_price = opp['buy_price']
+        sell_price = opp['sell_price']
+        volume = opp.get('volume', 0)
 
-        buy_name = "KuCoin" if buy_ex == 'kucoin' else "MEXC"
-        sell_name = "KuCoin" if sell_ex == 'kucoin' else "MEXC"
+        buy_ex_display = "kuCoin" if buy_ex == 'kucoin' else "mexc"
+        sell_ex_display = "kuCoin" if sell_ex == 'kucoin' else "mexc"
+
+        # Форматирование цен: для мелких монет (<1) показываем до 6 знаков, для крупных – до 3
+        buy_price_str = f"{buy_price:.6f}".rstrip('0').rstrip('.') if buy_price < 1 else f"{buy_price:.3f}".rstrip('0').rstrip('.')
+        sell_price_str = f"{sell_price:.6f}".rstrip('0').rstrip('.') if sell_price < 1 else f"{sell_price:.3f}".rstrip('0').rstrip('.')
+
+        volume_str = f"{volume:,.0f}"
 
         line = (
-            f"• <b>{pair}</b> – спред {spread}%\n"
-            f"  Купить на <a href='{buy_link}'>{buy_name}</a>, "
-            f"продать на <a href='{sell_link}'>{sell_name}</a>\n"
-            f"  <i>Сеть: {network}</i>"
+            f"{pair} (Vol: ${volume_str})\n"
+            f"Купить: {buy_ex_display} ({buy_price_str})\n"
+            f"Продать: {sell_ex_display} ({sell_price_str})\n\n"
+            f"<b>Спред:</b> {spread}%\n"
+            f"✅ Сеть: {network}\n"
         )
         lines.append(line)
 
     return "\n".join(lines)
 
-# ---------- Синхронный обработчик команд ----------
+# ---------- Обработчик команд ----------
 def handle_update(update_json):
     try:
         logging.debug(f"Update: {update_json}")
