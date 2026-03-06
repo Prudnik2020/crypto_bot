@@ -2,8 +2,8 @@ import os
 import sqlite3
 import logging
 import json
-from datetime import datetime, timedelta
 import requests
+from datetime import datetime, timedelta
 import ccxt
 import pandas as pd
 
@@ -20,16 +20,26 @@ ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()] if A
 MEXC_API_KEY = os.getenv("MEXC_API_KEY")
 MEXC_SECRET = os.getenv("MEXC_SECRET")
 
+# API-ключи KuCoin (не обязательны для текущей логики, но оставлены для будущего)
+KUCOIN_API_KEY = os.getenv("KUCOIN_API_KEY")
+KUCOIN_SECRET = os.getenv("KUCOIN_SECRET")
+KUCOIN_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE")
+
 # ---------- Настройки сканера ----------
 SPREAD_THRESHOLD = 1.0
-MAX_SPREAD = 30.0                      # отсекаем аномалии выше 30%
+MAX_SPREAD = 15.0
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
 # ---------- Биржи и шаблоны ссылок ----------
 EXCHANGES = {
     'kucoin': {
-        'inst': ccxt.kucoin({'enableRateLimit': True}),
+        'inst': ccxt.kucoin({
+            'apiKey': KUCOIN_API_KEY,
+            'secret': KUCOIN_SECRET,
+            'password': KUCOIN_PASSPHRASE,
+            'enableRateLimit': True
+        }),
         'url': 'https://www.kucoin.com/trade/{}-USDT'
     },
     'mexc': {
@@ -155,21 +165,7 @@ def get_payment_keyboard():
         ]
     }
 
-def cmd_buy(chat_id):
-    markup = get_payment_keyboard()
-    send_message(
-        chat_id,
-        "🔥 <b>Оплата доступа к боту</b>\n\n"
-        "💰 Стоимость: <b>2000₽/месяц</b>\n"
-        "💳 Номер карты Сбербанк (МИР):\n"
-        "<code>2202 2008 6542 7262</code>\n\n"
-        "👉 Переведите указанную сумму на эту карту.\n"
-        "После перевода нажмите кнопку «✅ Я оплатил» и пришлите скриншот подтверждения.\n\n"
-        "Администратор проверит и активирует доступ вручную.",
-        reply_markup=markup
-    )
-
-# ---------- Функции для работы с сетями ----------
+# ---------- Нормализация названий сетей ----------
 def normalize_network(name):
     name = str(name).upper().replace("-", "").replace("_", "").replace(" ", "")
     synonyms = {
@@ -185,56 +181,78 @@ def normalize_network(name):
     }
     return synonyms.get(name, name)
 
-def fetch_network_data(exchange_name, exchange):
-    logging.info(f"⏳ Загрузка сетей с {exchange_name}...")
-    networks = {}
+# ---------- Получение активных сетей с KuCoin (публичный эндпоинт) ----------
+def fetch_kucoin_active_networks():
+    """Возвращает словарь {валюта: [список активных сетей]} для KuCoin"""
+    url = "https://api.kucoin.com/api/v3/currencies"
     try:
-        if hasattr(exchange, 'fetch_currencies'):
-            currencies = exchange.fetch_currencies()
-            for code, data in currencies.items():
-                if 'networks' in data and data['networks']:
-                    first_network = list(data['networks'].keys())[0]
-                    networks[code] = normalize_network(first_network)
+        resp = requests.get(url, timeout=15)
+        data = resp.json()
+        if data.get('code') == '200000':
+            result = {}
+            for item in data['data']:
+                currency = item['currency']
+                active_nets = []
+                for chain in item.get('chains', []):
+                    if chain.get('isDepositEnabled') and chain.get('isWithdrawEnabled'):
+                        net_name = normalize_network(chain['chainName'])
+                        active_nets.append(net_name)
+                if active_nets:
+                    result[currency] = active_nets
+            logging.info(f"KuCoin: загружено {len(result)} валют с активными сетями")
+            return result
         else:
-            markets = exchange.load_markets()
-            for symbol, market in markets.items():
-                if not symbol.endswith('/USDT'):
-                    continue
-                base = symbol.split('/')[0]
-                if 'info' in market and 'networks' in market['info']:
-                    net_list = market['info']['networks']
-                    if net_list:
-                        networks[base] = normalize_network(net_list[0].get('network', ''))
-        logging.info(f"✅ Загружено {len(networks)} сетей с {exchange_name}")
+            logging.error(f"KuCoin API error: {data}")
     except Exception as e:
-        logging.error(f"Ошибка загрузки сетей с {exchange_name}: {e}")
-    return networks
+        logging.error(f"Ошибка получения сетей KuCoin: {e}")
+    return {}
 
-def update_network_data():
-    global currency_data
-    all_networks = {}
-    for name, exch in EXCHANGES.items():
-        networks = fetch_network_data(name, exch['inst'])
-        for base, net in networks.items():
-            if base not in all_networks:
-                all_networks[base] = {}
-            all_networks[base][name] = net
-    currency_data = all_networks
-    logging.info(f"📦 Всего активов с данными сетей: {len(currency_data)}")
+# ---------- Получение активных сетей с MEXC (через ccxt) ----------
+def fetch_mexc_active_networks():
+    """Возвращает словарь {валюта: [список активных сетей]} для MEXC"""
+    try:
+        mexc = EXCHANGES['mexc']['inst']
+        currencies = mexc.fetch_currencies()
+        result = {}
+        for code, data in currencies.items():
+            active_nets = []
+            if 'networks' in data:
+                for net_name, net_data in data['networks'].items():
+                    if net_data.get('deposit', {}).get('enabled') and net_data.get('withdraw', {}).get('enabled'):
+                        active_nets.append(normalize_network(net_name))
+            if active_nets:
+                result[code] = active_nets
+        logging.info(f"MEXC: загружено {len(result)} валют с активными сетями")
+        return result
+    except Exception as e:
+        logging.error(f"Ошибка получения сетей MEXC: {e}")
+        return {}
 
-currency_data = {}
-update_network_data()
+# ---------- Глобальный словарь активных сетей ----------
+active_networks = {
+    'kucoin': {},
+    'mexc': {}
+}
 
+def update_active_networks():
+    """Обновляет данные об активных сетях для обеих бирж"""
+    global active_networks
+    active_networks['kucoin'] = fetch_kucoin_active_networks()
+    active_networks['mexc'] = fetch_mexc_active_networks()
+    logging.info("Данные об активных сетях обновлены")
+
+# Вызываем при старте
+update_active_networks()
+
+# ---------- Проверка возможности перевода с учётом реально работающих сетей ----------
 def check_transfer_possible(buy_ex, sell_ex, symbol):
-    if not currency_data:
-        return True, "?"
     base = symbol.split('/')[0]
-    if base not in currency_data:
-        return False, None
-    buy_net = currency_data[base].get(buy_ex)
-    sell_net = currency_data[base].get(sell_ex)
-    if buy_net and sell_net and buy_net == sell_net:
-        return True, buy_net
+    buy_nets = active_networks.get(buy_ex, {}).get(base, [])
+    sell_nets = active_networks.get(sell_ex, {}).get(base, [])
+    common = set(buy_nets) & set(sell_nets)
+    if common:
+        # Возвращаем первую общую сеть
+        return True, list(common)[0]
     return False, None
 
 # ---------- Получение цен с бирж ----------
@@ -309,7 +327,7 @@ def scan_market():
     opportunities.sort(key=lambda x: x['spread'], reverse=True)
     return opportunities
 
-# ---------- Форматирование сообщения (точь-в-точь как в старом коде) ----------
+# ---------- Форматирование сообщения (точно как в старом коде) ----------
 def format_message(opportunities):
     if not opportunities:
         return None
@@ -448,9 +466,11 @@ def cmd_buy(chat_id):
         chat_id,
         "🔥 <b>Оплата доступа к боту</b>\n\n"
         "💰 Стоимость: <b>2000₽/месяц</b>\n"
-        "💎 Способ оплаты: СБП (мгновенно, без комиссии)\n\n"
-        "👉 Нажмите кнопку ниже, чтобы перейти к оплате.\n"
-        "После перевода нажмите «Я оплатил» и пришлите скриншот.",
+        "💳 Номер карты Сбербанк (МИР):\n"
+        "<code>2202 2008 6542 7262</code>\n\n"
+        "👉 Переведите указанную сумму на эту карту.\n"
+        "После перевода нажмите кнопку «✅ Я оплатил» и пришлите скриншот подтверждения.\n\n"
+        "Администратор проверит и активирует доступ вручную.",
         reply_markup=markup
     )
 
