@@ -20,7 +20,6 @@ ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()] if A
 MEXC_API_KEY = os.getenv("MEXC_API_KEY")
 MEXC_SECRET = os.getenv("MEXC_SECRET")
 
-# API-ключи KuCoin (не обязательны, но оставим для будущего)
 KUCOIN_API_KEY = os.getenv("KUCOIN_API_KEY")
 KUCOIN_SECRET = os.getenv("KUCOIN_SECRET")
 KUCOIN_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE")
@@ -218,6 +217,10 @@ def fetch_mexc_active_networks():
     try:
         mexc = EXCHANGES['mexc']['inst']
         currencies = mexc.fetch_currencies()
+        # Проверяем, что currencies - это словарь
+        if not isinstance(currencies, dict):
+            logging.error(f"MEXC fetch_currencies вернул не словарь: {type(currencies)}")
+            return {}
         result = {}
         for code, data in currencies.items():
             if not isinstance(data, dict):
@@ -227,10 +230,14 @@ def fetch_mexc_active_networks():
             if isinstance(networks, dict):
                 for net_name, net_data in networks.items():
                     if isinstance(net_data, dict):
-                        if net_data.get('deposit', {}).get('enabled') and net_data.get('withdraw', {}).get('enabled'):
-                            norm_net = normalize_network(net_name)
-                            if norm_net:
-                                active_nets.append(norm_net)
+                        # Проверяем, что deposit и withdraw - словари с полем enabled
+                        deposit = net_data.get('deposit', {})
+                        withdraw = net_data.get('withdraw', {})
+                        if isinstance(deposit, dict) and isinstance(withdraw, dict):
+                            if deposit.get('enabled') and withdraw.get('enabled'):
+                                norm_net = normalize_network(net_name)
+                                if norm_net:
+                                    active_nets.append(norm_net)
             if active_nets:
                 result[code] = active_nets
         logging.info(f"MEXC: загружено {len(result)} валют с активными сетями")
@@ -262,14 +269,12 @@ def check_transfer_possible(buy_ex, sell_ex, symbol):
     sell_nets = active_networks.get(sell_ex, {}).get(base, [])
     common = set(buy_nets) & set(sell_nets)
     if common:
-        # Есть общая активная сеть – отлично
         return True, list(common)[0]
     else:
-        # Нет общей сети – проверяем, загружены ли вообще данные
-        # Если словари пусты (ошибка API), всё равно показываем вилку с пометкой "?"
-        if not active_networks.get(buy_ex) and not active_networks.get(sell_ex):
+        # Если для какой-то из бирж данные не загрузились (пустой словарь), считаем перевод возможным с пометкой "?"
+        if not active_networks.get(buy_ex) or not active_networks.get(sell_ex):
             return True, "?"
-        # Если данные есть, но нет общей сети – вилка не показывается
+        # Если данные есть, но нет общей сети – перевод невозможен
         return False, None
 
 # ---------- Получение цен с бирж ----------
