@@ -4,3 +4,4 @@ python-dotenv==1.0.0
 requests==2.32.3
 ccxt==4.4.16
 pandas==2.2.3
+setuptools==75.8.0
