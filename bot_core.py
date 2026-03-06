@@ -260,12 +260,17 @@ def check_transfer_possible(buy_ex, sell_ex, symbol):
     base = symbol.split('/')[0]
     buy_nets = active_networks.get(buy_ex, {}).get(base, [])
     sell_nets = active_networks.get(sell_ex, {}).get(base, [])
-    # Ищем пересечение (общие сети)
     common = set(buy_nets) & set(sell_nets)
     if common:
-        # Возвращаем первую общую сеть (можно выбрать по приоритету)
+        # Есть общая активная сеть – отлично
         return True, list(common)[0]
-    return False, None
+    else:
+        # Нет общей сети – проверяем, загружены ли вообще данные
+        # Если словари пусты (ошибка API), всё равно показываем вилку с пометкой "?"
+        if not active_networks.get(buy_ex) and not active_networks.get(sell_ex):
+            return True, "?"
+        # Если данные есть, но нет общей сети – вилка не показывается
+        return False, None
 
 # ---------- Получение цен с бирж ----------
 def fetch_prices(exchange_name, exchange):
