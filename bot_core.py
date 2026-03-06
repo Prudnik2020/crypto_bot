@@ -21,11 +21,11 @@ MEXC_API_KEY = os.getenv("MEXC_API_KEY")
 MEXC_SECRET = os.getenv("MEXC_SECRET")
 
 # ---------- Настройки сканера ----------
-SPREAD_THRESHOLD = 0.1
+SPREAD_THRESHOLD = 1.0  # теперь 1%
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
-# ---------- Биржи и шаблоны ссылок (не используются в сообщениях, но оставлены для совместимости) ----------
+# ---------- Биржи и шаблоны ссылок ----------
 EXCHANGES = {
     'kucoin': {
         'inst': ccxt.kucoin({'enableRateLimit': True}),
@@ -295,7 +295,7 @@ def scan_market():
     opportunities.sort(key=lambda x: x['spread'], reverse=True)
     return opportunities
 
-# ---------- Форматирование сообщения (новый дизайн) ----------
+# ---------- Форматирование сообщения (ссылки, как просили) ----------
 def format_message(opportunities):
     if not opportunities:
         return None
@@ -311,10 +311,15 @@ def format_message(opportunities):
         sell_price = opp['sell_price']
         volume = opp.get('volume', 0)
 
-        buy_ex_display = "kuCoin" if buy_ex == 'kucoin' else "mexc"
-        sell_ex_display = "kuCoin" if sell_ex == 'kucoin' else "mexc"
+        # Получаем ссылки
+        buy_link = EXCHANGES[buy_ex]['url'].format(pair.split('/')[0])
+        sell_link = EXCHANGES[sell_ex]['url'].format(pair.split('/')[0])
 
-        # Форматирование цен: для мелких монет (<1) показываем до 6 знаков, для крупных – до 3
+        # Названия для отображения
+        buy_name = "KuCoin" if buy_ex == 'kucoin' else "MEXC"
+        sell_name = "KuCoin" if sell_ex == 'kucoin' else "MEXC"
+
+        # Форматирование цен
         buy_price_str = f"{buy_price:.6f}".rstrip('0').rstrip('.') if buy_price < 1 else f"{buy_price:.3f}".rstrip('0').rstrip('.')
         sell_price_str = f"{sell_price:.6f}".rstrip('0').rstrip('.') if sell_price < 1 else f"{sell_price:.3f}".rstrip('0').rstrip('.')
 
@@ -322,8 +327,8 @@ def format_message(opportunities):
 
         line = (
             f"{pair} (Vol: ${volume_str})\n"
-            f"Купить: {buy_ex_display} ({buy_price_str})\n"
-            f"Продать: {sell_ex_display} ({sell_price_str})\n\n"
+            f"Купить: <a href='{buy_link}'>{buy_name}</a> ({buy_price_str})\n"
+            f"Продать: <a href='{sell_link}'>{sell_name}</a> ({sell_price_str})\n\n"
             f"<b>Спред:</b> {spread}%\n"
             f"✅ Сеть: {network}\n"
         )
