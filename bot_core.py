@@ -122,6 +122,42 @@ def get_auto_scan_users():
     conn.close()
     return rows
 
+# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ АВТОСКАНА ----------
+def update_last_sent(user_id, last_sent):
+    """Обновляет время последней отправки для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE auto_scan SET last_sent=? WHERE user_id=?", (last_sent.isoformat(), user_id))
+    conn.commit()
+    conn.close()
+
+def run_autoscan():
+    """
+    Вызывается по крону раз в минуту. Проверяет всех пользователей с автосканом
+    и отправляет результаты, если наступило время.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, interval, last_sent FROM auto_scan")
+    rows = c.fetchall()
+    conn.close()
+
+    now = datetime.now()
+    for user_id, interval, last_sent_str in rows:
+        if last_sent_str:
+            last_sent = datetime.fromisoformat(last_sent_str)
+        else:
+            last_sent = None
+
+        # Проверяем, пора ли отправлять
+        if last_sent is None or (now - last_sent).total_seconds() >= interval * 60:
+            opportunities = scan_market()
+            text = format_message(opportunities)
+            if text:
+                send_message(user_id, text, disable_web_page_preview=True)
+            update_last_sent(user_id, now)
+# ----------------------------------------------------
+
 # ---------- Отправка сообщений ----------
 def send_message(chat_id, text, reply_markup=None, parse_mode="HTML", disable_web_page_preview=False):
     url = f"{TELEGRAM_API_URL}/sendMessage"
