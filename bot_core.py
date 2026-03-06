@@ -21,8 +21,8 @@ MEXC_API_KEY = os.getenv("MEXC_API_KEY")
 MEXC_SECRET = os.getenv("MEXC_SECRET")
 
 # ---------- Настройки сканера ----------
-SPREAD_THRESHOLD = 1.0                # минимальный спред для показа
-MAX_SPREAD = 20.0                    # максимальный спред (чтобы убрать аномалии)
+SPREAD_THRESHOLD = 1.0
+MAX_SPREAD = 30.0                      # отсекаем аномалии выше 30%
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
@@ -271,7 +271,6 @@ def scan_market():
 
         possible, network = check_transfer_possible('kucoin', 'mexc', symbol)
 
-        # Добавляем только если спред в пределах [THRESHOLD, MAX_SPREAD]
         if possible and SPREAD_THRESHOLD < spread_kucoin_to_mexc <= MAX_SPREAD:
             opportunities.append({
                 'pair': symbol,
@@ -298,12 +297,12 @@ def scan_market():
     opportunities.sort(key=lambda x: x['spread'], reverse=True)
     return opportunities
 
-# ---------- Форматирование сообщения (ссылки, без баннера) ----------
+# ---------- Форматирование сообщения (точь-в-точь как в старом коде) ----------
 def format_message(opportunities):
     if not opportunities:
         return None
 
-    lines = ["<b>ТОП-7 Возможностей (Вывод открыт:)</b>\n"]
+    lines = ["💰 ТОП-7 Возможностей (Вывод открыт:)\n"]
     for opp in opportunities[:7]:
         pair = opp['pair']
         spread = opp['spread']
@@ -317,8 +316,8 @@ def format_message(opportunities):
         buy_link = EXCHANGES[buy_ex]['url'].format(pair.split('/')[0])
         sell_link = EXCHANGES[sell_ex]['url'].format(pair.split('/')[0])
 
-        buy_name = "KuCoin" if buy_ex == 'kucoin' else "MEXC"
-        sell_name = "KuCoin" if sell_ex == 'kucoin' else "MEXC"
+        buy_name = "kucoin" if buy_ex == 'kucoin' else "mexc"
+        sell_name = "kucoin" if sell_ex == 'kucoin' else "mexc"
 
         # Форматирование цен
         buy_price_str = f"{buy_price:.6f}".rstrip('0').rstrip('.') if buy_price < 1 else f"{buy_price:.3f}".rstrip('0').rstrip('.')
@@ -327,11 +326,12 @@ def format_message(opportunities):
         volume_str = f"{volume:,.0f}"
 
         line = (
-            f"{pair} (Vol: ${volume_str})\n"
-            f"Купить: <a href='{buy_link}'>{buy_name}</a> ({buy_price_str})\n"
-            f"Продать: <a href='{sell_link}'>{sell_name}</a> ({sell_price_str})\n\n"
-            f"<b>Спред:</b> {spread}%\n"
-            f"✅ Сеть: {network}\n"
+            f"💰 {pair} (Vol: ${volume_str})\n"
+            f"🔹 Купить: <a href='{buy_link}'>{buy_name}</a> ({buy_price_str})\n"
+            f"🔸 Продать: <a href='{sell_link}'>{sell_name}</a> ({sell_price_str})\n"
+            f"📈 Спред: {spread}%\n"
+            f"🔄 ✅ Сеть: {network}\n"
+            f"───────────────\n"
         )
         lines.append(line)
 
@@ -428,7 +428,6 @@ def cmd_manual_scan(chat_id, user_id):
     if not text:
         send_message(chat_id, "🙁 Вилок с открытыми сетями сейчас нет.")
     else:
-        # Отключаем предпросмотр ссылок, чтобы убрать баннер
         send_message(chat_id, text, disable_web_page_preview=True)
 
 def cmd_buy(chat_id):
