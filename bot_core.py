@@ -1,44 +1,32 @@
-# bot_core.py
-import sys
-import asyncio
 import os
 import sqlite3
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
-
-# Загружаем .env (для локальной отладки)
-load_dotenv()
-
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-import ccxt.async_support as ccxt
-import pandas as pd
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram import F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import json
+import time
+from datetime import datetime, timedelta
+import requests
+import ccxt
+import pandas as pd
 
-# --- ЧТЕНИЕ НАСТРОЕК ИЗ .env ---
+# ---------- Конфигурация ----------
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+if not TELEGRAM_TOKEN:
+    raise ValueError("BOT_TOKEN not set in environment")
+
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
-if ADMIN_IDS_STR:
-    CHAT_ID = int(ADMIN_IDS_STR.split(',')[0].strip())
-    ADMIN_ID = int(ADMIN_IDS_STR.split(',')[0].strip())
-else:
-    CHAT_ID = None
-    ADMIN_ID = None
-    logging.error("ADMIN_IDS не задан в .env")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()] if ADMIN_IDS_STR else []
 
 MEXC_API_KEY = os.getenv("MEXC_API_KEY")
 MEXC_SECRET = os.getenv("MEXC_SECRET")
 
-# --- НАСТРОЙКИ СКАНЕРА ---
+# ---------- Настройки сканера ----------
 SPREAD_THRESHOLD = 0.1
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
+# ---------- Биржи и шаблоны ссылок ----------
 EXCHANGES = {
     'kucoin': {
         'inst': ccxt.kucoin({'enableRateLimit': True}),
@@ -54,68 +42,121 @@ EXCHANGES = {
     },
 }
 
-bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+# ---------- База данных ----------
+DB_PATH = "subscriptions.db"
 
-currency_data = {}
-auto_scan_task = None
-network_update_task = None
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS subscriptions
+                 (user_id INTEGER PRIMARY KEY, username TEXT, expires DATE)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS auto_scan
+                 (user_id INTEGER PRIMARY KEY, interval INTEGER, last_sent TIMESTAMP)''')
+    conn.commit()
+    conn.close()
 
-# --- БАЗА ДАННЫХ ПОДПИСОК ---
-conn = sqlite3.connect('subscriptions.db', check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS subscriptions
-             (user_id INTEGER PRIMARY KEY,
-              username TEXT,
-              expires DATE)''')
-conn.commit()
+init_db()
 
-c.execute('''CREATE TABLE IF NOT EXISTS auto_scan
-             (user_id INTEGER PRIMARY KEY,
-              interval INTEGER,
-              last_sent TIMESTAMP)''')
-conn.commit()
-
+# ---------- Подписки ----------
 def is_subscribed(user_id):
+    if user_id in ADMIN_IDS:
+        return True
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     c.execute("SELECT expires FROM subscriptions WHERE user_id=?", (user_id,))
     row = c.fetchone()
+    conn.close()
     if row:
-        expires = datetime.strptime(row[0], '%Y-%m-%d').date()
+        expires = datetime.strptime(row[0], "%Y-%m-%d").date()
         if expires >= datetime.now().date():
             return True
     return False
 
 def grant_access(user_id, username, days=30):
     expires = (datetime.now() + timedelta(days=days)).date()
-    c.execute("REPLACE INTO subscriptions (user_id, username, expires) VALUES (?,?,?)",
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("REPLACE INTO subscriptions (user_id, username, expires) VALUES (?, ?, ?)",
               (user_id, username, expires.isoformat()))
     conn.commit()
+    conn.close()
     return expires
 
+def get_expiry_date(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT expires FROM subscriptions WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 def enable_auto_scan(user_id, interval):
-    now = datetime.now().isoformat()
-    c.execute("REPLACE INTO auto_scan (user_id, interval, last_sent) VALUES (?,?,?)",
-              (user_id, interval, now))
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("REPLACE INTO auto_scan (user_id, interval, last_sent) VALUES (?, ?, ?)",
+              (user_id, interval, datetime.now().isoformat()))
     conn.commit()
+    conn.close()
 
 def disable_auto_scan(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     c.execute("DELETE FROM auto_scan WHERE user_id=?", (user_id,))
     conn.commit()
+    conn.close()
 
 def get_auto_scan_users():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     c.execute("SELECT user_id, interval, last_sent FROM auto_scan")
-    return c.fetchall()
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
-def update_last_sent(user_id, last_sent):
-    c.execute("UPDATE auto_scan SET last_sent=? WHERE user_id=?", (last_sent.isoformat(), user_id))
-    conn.commit()
+# ---------- Отправка сообщений ----------
+def send_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
+    url = f"{TELEGRAM_API_URL}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode
+    }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        r.raise_for_status()
+    except Exception as e:
+        logging.error(f"Failed to send message to {chat_id}: {e}")
 
-# ========== ФУНКЦИИ СКАНЕРА (без изменений) ==========
-def get_link(exchange_name, symbol):
-    base = symbol.split('/')[0]
-    return EXCHANGES[exchange_name]['url'].format(base)
+def send_message_with_keyboard(chat_id, text, keyboard_buttons):
+    markup = {
+        "keyboard": keyboard_buttons,
+        "resize_keyboard": True,
+        "one_time_keyboard": False
+    }
+    send_message(chat_id, text, reply_markup=markup)
 
+# ---------- Клавиатуры ----------
+def get_main_keyboard():
+    return [
+        ["🚀 Найти арбитраж (сейчас)"],
+        ["💰 Купить подписку 2000₽/мес"],
+        ["▶️ Авто-скан (1 мин)", "▶️ Авто-скан (5 мин)"],
+        ["⏹ Стоп сканирование"],
+        ["📊 Статус"]
+    ]
+
+def get_payment_keyboard():
+    sbp_link = "https://www.sberbank.ru/ru/choise_bank?requisiteNumber=79093545631&bankCode=100000000111"
+    return {
+        "inline_keyboard": [
+            [{"text": "💳 Оплатить через СБП", "url": sbp_link}],
+            [{"text": "✅ Я оплатил (проверить)", "callback_data": "check_payment"}]
+        ]
+    }
+
+# ---------- Функции для работы с сетями ----------
 def normalize_network(name):
     name = str(name).upper().replace("-", "").replace("_", "").replace(" ", "")
     synonyms = {
@@ -131,168 +172,298 @@ def normalize_network(name):
     }
     return synonyms.get(name, name)
 
-async def fetch_network_data(exchange_name, exchange):
-    # ... (полностью скопируйте из вашего кода, без изменений)
-    # Я оставляю многоточие для краткости, но вы должны вставить полную функцию.
-    pass
+def fetch_network_data(exchange_name, exchange):
+    logging.info(f"⏳ Загрузка сетей с {exchange_name}...")
+    networks = {}
+    try:
+        if hasattr(exchange, 'fetch_currencies'):
+            currencies = exchange.fetch_currencies()
+            for code, data in currencies.items():
+                if 'networks' in data and data['networks']:
+                    first_network = list(data['networks'].keys())[0]
+                    networks[code] = normalize_network(first_network)
+        else:
+            markets = exchange.load_markets()
+            for symbol, market in markets.items():
+                if not symbol.endswith('/USDT'):
+                    continue
+                base = symbol.split('/')[0]
+                if 'info' in market and 'networks' in market['info']:
+                    net_list = market['info']['networks']
+                    if net_list:
+                        networks[base] = normalize_network(net_list[0].get('network', ''))
+        logging.info(f"✅ Загружено {len(networks)} сетей с {exchange_name}")
+    except Exception as e:
+        logging.error(f"Ошибка загрузки сетей с {exchange_name}: {e}")
+    return networks
 
-async def update_network_data():
-    # ... (ваша функция)
-    pass
+def update_network_data():
+    global currency_data
+    all_networks = {}
+    for name, exch in EXCHANGES.items():
+        networks = fetch_network_data(name, exch['inst'])
+        for base, net in networks.items():
+            if base not in all_networks:
+                all_networks[base] = {}
+            all_networks[base][name] = net
+    currency_data = all_networks
+    logging.info(f"📦 Всего активов с данными сетей: {len(currency_data)}")
 
+# Глобальный словарь с данными сетей
+currency_data = {}
+update_network_data()   # при ошибках загрузки словарь останется пустым
+
+# ---------- Проверка возможности перевода (теперь с запасным вариантом) ----------
 def check_transfer_possible(buy_ex, sell_ex, symbol):
-    # ... (ваша функция)
-    pass
+    """
+    Проверяет, есть ли у актива общая сеть на обеих биржах.
+    Если данные о сетях не загружены (currency_data пуст), считаем, что перевод возможен.
+    """
+    # Если словарь с сетями пуст (ошибка загрузки), пропускаем проверку
+    if not currency_data:
+        return True, "?"
 
-async def fetch_prices(exchange_name, exchange_data):
-    # ... (ваша функция)
-    pass
+    base = symbol.split('/')[0]
+    if base not in currency_data:
+        return False, None
+    buy_net = currency_data[base].get(buy_ex)
+    sell_net = currency_data[base].get(sell_ex)
+    if buy_net and sell_net and buy_net == sell_net:
+        return True, buy_net
+    return False, None
 
-async def scan_market():
-    # ... (ваша функция)
-    pass
+# ---------- Получение цен с бирж ----------
+def fetch_prices(exchange_name, exchange):
+    prices = {}
+    try:
+        tickers = exchange.fetch_tickers()
+        for symbol, ticker in tickers.items():
+            if not symbol.endswith('/USDT'):
+                continue
+            if symbol in BLACKLIST:
+                continue
+            last = ticker.get('last')
+            quote_volume = ticker.get('quoteVolume')
+            if last and quote_volume and quote_volume >= MIN_VOLUME:
+                prices[symbol] = {
+                    'price': last,
+                    'volume': quote_volume
+                }
+    except Exception as e:
+        logging.error(f"Ошибка получения тикеров с {exchange_name}: {e}")
+    return prices
 
-def format_message(opps):
-    # ... (ваша функция)
-    pass
+# ---------- Основной сканер (с проверкой сетей) ----------
+def scan_market():
+    opportunities = []
+    kucoin_prices = fetch_prices('kucoin', EXCHANGES['kucoin']['inst'])
+    mexc_prices = fetch_prices('mexc', EXCHANGES['mexc']['inst'])
 
-# ========== ХЕНДЛЕРЫ ==========
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await update_network_data()
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-        [types.KeyboardButton(text="🚀 Найти арбитраж (сейчас)")],
-        [types.KeyboardButton(text="💰 Купить подписку 2000₽/мес")],
-        [types.KeyboardButton(text="▶️ Авто-скан (1 мин)"), types.KeyboardButton(text="▶️ Авто-скан (5 мин)")],
-        [types.KeyboardButton(text="⏹ Стоп сканирование")],
-        [types.KeyboardButton(text="📊 Статус")]
-    ])
-    await message.answer("👋 Бот готов!", reply_markup=kb)
+    all_symbols = set(kucoin_prices.keys()) | set(mexc_prices.keys())
 
-@dp.message(lambda msg: msg.text == "📊 Статус")
-async def cmd_status(message: types.Message):
-    status = "Работает" if auto_scan_task and not auto_scan_task.done() else "Остановлен"
-    await message.answer(f"📊 Статус: {status}")
+    for symbol in all_symbols:
+        if symbol in BLACKLIST:
+            continue
 
-@dp.message(lambda msg: msg.text == "🚀 Найти арбитраж (сейчас)")
-async def cmd_manual_scan(message: types.Message):
-    if not is_subscribed(message.from_user.id):
-        await message.answer("❌ У вас нет активной подписки.\n💰 Оплатите через меню.")
-        return
-    status_msg = await message.answer("⏳ Ищу только открытые сети...")
-    opps = await scan_market()
-    await status_msg.delete()
-    text = format_message(opps)
-    if not text:
-        await message.answer("🙁 Вилок с открытыми сетями сейчас нет.")
+        kucoin = kucoin_prices.get(symbol)
+        mexc = mexc_prices.get(symbol)
+
+        if not kucoin or not mexc:
+            continue
+
+        price_kucoin = kucoin['price']
+        price_mexc = mexc['price']
+        spread_kucoin_to_mexc = (price_mexc - price_kucoin) / price_kucoin * 100
+        spread_mexc_to_kucoin = (price_kucoin - price_mexc) / price_mexc * 100
+
+        # Проверяем возможность перевода и общую сеть
+        possible, network = check_transfer_possible('kucoin', 'mexc', symbol)
+
+        if possible and spread_kucoin_to_mexc > SPREAD_THRESHOLD:
+            opportunities.append({
+                'pair': symbol,
+                'spread': round(spread_kucoin_to_mexc, 2),
+                'buy_exchange': 'kucoin',
+                'sell_exchange': 'mexc',
+                'network': network,
+                'buy_price': price_kucoin,
+                'sell_price': price_mexc
+            })
+        elif possible and spread_mexc_to_kucoin > SPREAD_THRESHOLD:
+            opportunities.append({
+                'pair': symbol,
+                'spread': round(spread_mexc_to_kucoin, 2),
+                'buy_exchange': 'mexc',
+                'sell_exchange': 'kucoin',
+                'network': network,
+                'buy_price': price_mexc,
+                'sell_price': price_kucoin
+            })
+
+    opportunities.sort(key=lambda x: x['spread'], reverse=True)
+    return opportunities
+
+def format_message(opportunities):
+    if not opportunities:
+        return None
+
+    lines = ["✅ Найдены арбитражные возможности:\n"]
+    for opp in opportunities[:10]:
+        pair = opp['pair']
+        spread = opp['spread']
+        buy_ex = opp['buy_exchange']
+        sell_ex = opp['sell_exchange']
+        network = opp.get('network', '—')
+        buy_link = EXCHANGES[buy_ex]['url'].format(pair.split('/')[0])
+        sell_link = EXCHANGES[sell_ex]['url'].format(pair.split('/')[0])
+
+        buy_name = "KuCoin" if buy_ex == 'kucoin' else "MEXC"
+        sell_name = "KuCoin" if sell_ex == 'kucoin' else "MEXC"
+
+        line = (
+            f"• <b>{pair}</b> – спред {spread}%\n"
+            f"  Купить на <a href='{buy_link}'>{buy_name}</a>, "
+            f"продать на <a href='{sell_link}'>{sell_name}</a>\n"
+            f"  <i>Сеть: {network}</i>"
+        )
+        lines.append(line)
+
+    return "\n".join(lines)
+
+# ---------- Синхронный обработчик команд ----------
+def handle_update(update_json):
+    try:
+        logging.debug(f"Update: {update_json}")
+
+        if "callback_query" in update_json:
+            cb = update_json["callback_query"]
+            chat_id = cb["message"]["chat"]["id"]
+            data = cb["data"]
+            requests.post(f"{TELEGRAM_API_URL}/answerCallbackQuery",
+                          json={"callback_query_id": cb["id"]})
+            if data == "check_payment":
+                send_message(chat_id, "📸 Пожалуйста, отправьте скриншот подтверждения перевода.\nАдминистратор проверит и активирует доступ вручную.")
+            return
+
+        if "message" not in update_json:
+            return
+
+        msg = update_json["message"]
+        chat_id = msg["chat"]["id"]
+        user_id = msg["from"]["id"]
+        username = msg["from"].get("username")
+        text = msg.get("text", "")
+
+        if text == "/start":
+            cmd_start(chat_id, user_id, username)
+        elif text.startswith("/grant") and user_id in ADMIN_IDS:
+            cmd_grant(chat_id, text)
+        elif text == "🚀 Найти арбитраж (сейчас)":
+            cmd_manual_scan(chat_id, user_id)
+        elif text == "💰 Купить подписку 2000₽/мес":
+            cmd_buy(chat_id)
+        elif text == "▶️ Авто-скан (1 мин)":
+            cmd_auto_scan(chat_id, user_id, 1)
+        elif text == "▶️ Авто-скан (5 мин)":
+            cmd_auto_scan(chat_id, user_id, 5)
+        elif text == "⏹ Стоп сканирование":
+            cmd_stop_auto(chat_id, user_id)
+        elif text == "📊 Статус":
+            cmd_status(chat_id, user_id)
+        elif msg.get('photo'):
+            handle_photo(chat_id, user_id, username, msg)
+        else:
+            send_message_with_keyboard(chat_id, "Неизвестная команда. Используйте кнопки.", get_main_keyboard())
+
+    except Exception as e:
+        logging.error(f"Error in handle_update: {e}", exc_info=True)
+
+# ---------- Реализация команд ----------
+def cmd_start(chat_id, user_id, username):
+    if is_subscribed(user_id):
+        send_message_with_keyboard(
+            chat_id,
+            f"👋 Добро пожаловать, {username or 'пользователь'}!\nБот готов к работе.",
+            get_main_keyboard()
+        )
     else:
-        await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+        send_message_with_keyboard(
+            chat_id,
+            "👋 Привет! Я бот для арбитража криптовалют.\nДля использования необходимо оформить подписку.",
+            [["💰 Купить подписку 2000₽/мес"]]
+        )
 
-@dp.message(F.text == "💰 Купить подписку 2000₽/мес")
-async def cmd_buy(message: types.Message):
-    sbp_link = "https://www.sberbank.ru/ru/choise_bank?requisiteNumber=79093545631&bankCode=100000000111"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить через СБП", url=sbp_link)],
-        [InlineKeyboardButton(text="✅ Я оплатил (проверить)", callback_data="check_payment")]
-    ])
-    await message.answer(
+def cmd_grant(chat_id, text):
+    parts = text.split()
+    if len(parts) < 2:
+        send_message(chat_id, "Использование: /grant <user_id> [days]")
+        return
+    try:
+        target_id = int(parts[1])
+        days = int(parts[2]) if len(parts) > 2 else 30
+    except ValueError:
+        send_message(chat_id, "Неверный формат.")
+        return
+    grant_access(target_id, None, days)
+    send_message(chat_id, f"✅ Доступ пользователю {target_id} выдан на {days} дней.")
+    try:
+        send_message(target_id, f"🎉 Вам выдана подписка на {days} дней!")
+    except:
+        pass
+
+def cmd_manual_scan(chat_id, user_id):
+    if not is_subscribed(user_id):
+        send_message(chat_id, "❌ У вас нет активной подписки.\n💰 Оплатите через меню.")
+        return
+    send_message(chat_id, "⏳ Ищу только открытые сети...")
+    opportunities = scan_market()
+    text = format_message(opportunities)
+    if not text:
+        send_message(chat_id, "🙁 Вилок с открытыми сетями сейчас нет.")
+    else:
+        send_message(chat_id, text)
+
+def cmd_buy(chat_id):
+    markup = get_payment_keyboard()
+    send_message(
+        chat_id,
         "🔥 <b>Оплата доступа к боту</b>\n\n"
         "💰 Стоимость: <b>2000₽/месяц</b>\n"
         "💎 Способ оплаты: СБП (мгновенно, без комиссии)\n\n"
         "👉 Нажмите кнопку ниже, чтобы перейти к оплате.\n"
         "После перевода нажмите «Я оплатил» и пришлите скриншот.",
-        reply_markup=kb, parse_mode="HTML"
+        reply_markup=markup
     )
 
-@dp.callback_query(F.data == "check_payment")
-async def process_payment_check(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "📸 Пожалуйста, отправьте скриншот подтверждения перевода.\n"
-        "Администратор проверит и активирует доступ вручную."
-    )
-    await callback.answer()
+def cmd_auto_scan(chat_id, user_id, minutes):
+    if not is_subscribed(user_id):
+        send_message(chat_id, "❌ У вас нет активной подписки.")
+        return
+    enable_auto_scan(user_id, minutes)
+    send_message(chat_id, f"✅ Авто-скан включён (интервал {minutes} мин).")
 
-@dp.message(F.photo)
-async def handle_payment_screenshot(message: types.Message):
-    if not ADMIN_ID:
-        await message.answer("❌ Ошибка: не настроен администратор.")
-        return
-    caption = f"💰 Платёж от @{message.from_user.username} (ID: {message.from_user.id})\nПроверьте и выдайте доступ."
-    await bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption=caption)
-    await message.answer("✅ Скриншот отправлен администратору. Ожидайте подтверждения.")
+def cmd_stop_auto(chat_id, user_id):
+    disable_auto_scan(user_id)
+    send_message(chat_id, "🛑 Авто-скан отключён.")
 
-@dp.message(Command("grant"))
-async def cmd_grant(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+def cmd_status(chat_id, user_id):
+    send_message(chat_id, "📊 Статус: работает")
+
+def handle_photo(chat_id, user_id, username, msg):
+    if not ADMIN_IDS:
+        send_message(chat_id, "❌ Ошибка: не настроен администратор.")
         return
-    args = message.text.split()
-    if len(args) >= 2:
-        try:
-            user_id = int(args[1])
-            days = 30
-            if len(args) >= 3:
-                days = int(args[2])
-            expires = grant_access(user_id, f"id{user_id}", days)
-            await message.answer(f"✅ Подписка выдана {user_id} на {days} дней (до {expires}).")
-            try:
-                await bot.send_message(user_id, f"🎉 Вам выдана подписка на {days} дней!")
-            except:
-                pass
-            return
-        except ValueError:
-            await message.answer("❌ Неверный формат ID.")
-            return
-    if not message.reply_to_message:
-        await message.answer("❌ Ответьте на сообщение пользователя или укажите ID.")
-        return
-    user = message.reply_to_message.from_user
-    days = 30
-    if len(args) > 1:
-        try:
-            days = int(args[1])
-        except ValueError:
-            await message.answer("❌ Количество дней должно быть числом.")
-            return
-    expires = grant_access(user.id, user.username or f"id{user.id}", days)
-    await message.answer(f"✅ Подписка выдана @{user.username} на {days} дней (до {expires}).")
+    file_id = msg['photo'][-1]['file_id']
+    caption = f"💰 Платёж от @{username} (ID: {user_id})\nПроверьте и выдайте доступ."
+    url = f"{TELEGRAM_API_URL}/sendPhoto"
+    payload = {
+        "chat_id": ADMIN_IDS[0],
+        "photo": file_id,
+        "caption": caption
+    }
     try:
-        await bot.send_message(user.id, f"🎉 Вам выдана подписка на {days} дней!")
-    except:
-        pass
-
-@dp.message(lambda msg: "▶️ Авто-скан" in msg.text)
-async def cmd_start_auto(message: types.Message):
-    if not is_subscribed(message.from_user.id):
-        await message.answer("❌ У вас нет активной подписки.")
-        return
-    interval = 1 if "1 мин" in message.text else 5
-    enable_auto_scan(message.from_user.id, interval)
-    await message.answer(f"✅ Авто-скан включён (интервал {interval} мин).")
-
-@dp.message(lambda msg: msg.text == "⏹ Стоп сканирование")
-async def cmd_stop_auto(message: types.Message):
-    disable_auto_scan(message.from_user.id)
-    await message.answer("🛑 Авто-скан отключён.")
-
-# ========== ВОРКЕРЫ (теперь они не нужны для вебхука, но можно оставить) ==========
-async def network_update_worker():
-    while True:
-        await asyncio.sleep(30 * 60)
-        logging.info("⏳ Плановое обновление данных сетей...")
-        await update_network_data()
-
-async def auto_scan_worker():
-    # Для вебхука этот воркер тоже должен работать, поэтому оставляем.
-    # Он будет выполняться в фоне, если мы его запустим. Но для простоты можно запустить отдельно.
-    pass
-
-# Функция для обработки входящего обновления (вызывается из Flask)
-async def handle_webhook(update_json):
-    update = types.Update(**update_json)
-    await dp.feed_update(bot, update)
-
-# Функция для запуска фоновых задач (будет вызвана из Flask при старте)
-async def start_background_tasks():
-    global network_update_task, auto_scan_task
-    network_update_task = asyncio.create_task(network_update_worker())
-    # auto_scan_task = asyncio.create_task(auto_scan_worker()) # мы его переделаем позже
+        requests.post(url, json=payload, timeout=10)
+        send_message(chat_id, "✅ Скриншот отправлен администратору. Ожидайте подтверждения.")
+    except Exception as e:
+        logging.error(f"Failed to forward photo: {e}")
+        send_message(chat_id, "❌ Ошибка при отправке скриншота.")
