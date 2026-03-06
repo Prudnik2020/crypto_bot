@@ -22,7 +22,7 @@ MEXC_SECRET = os.getenv("MEXC_SECRET")
 
 # ---------- Настройки сканера ----------
 SPREAD_THRESHOLD = 1.0                # минимальный спред для показа
-MAX_SPREAD = 1000.0                    # максимальный спред (чтобы убрать аномалии)
+MAX_SPREAD = 20.0                    # максимальный спред (чтобы убрать аномалии)
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
