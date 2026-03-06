@@ -146,16 +146,26 @@ def run_autoscan():
     for user_id, interval, last_sent_str in rows:
         if last_sent_str:
             last_sent = datetime.fromisoformat(last_sent_str)
+            elapsed = (now - last_sent).total_seconds()
+            logging.info(f"Автоскан: user={user_id}, interval={interval}, last_sent={last_sent}, прошло={elapsed:.0f} сек")
         else:
             last_sent = None
+            elapsed = None
+            logging.info(f"Автоскан: user={user_id}, interval={interval}, last_sent=None")
 
         # Проверяем, пора ли отправлять
-        if last_sent is None or (now - last_sent).total_seconds() >= interval * 60:
+        if last_sent is None or elapsed >= interval * 60:
+            logging.info(f"👉 Пора отправлять для user={user_id}")
             opportunities = scan_market()
             text = format_message(opportunities)
             if text:
                 send_message(user_id, text, disable_web_page_preview=True)
-            update_last_sent(user_id, now)
+                logging.info(f"✅ Сообщение отправлено user={user_id}")
+                update_last_sent(user_id, now)
+            else:
+                logging.info(f"ℹ️ Нет вилок для user={user_id}, время не обновляем")
+        else:
+            logging.info(f"⏳ Ещё не время для user={user_id}, осталось {interval*60 - elapsed:.0f} сек")
 # ----------------------------------------------------
 
 # ---------- Отправка сообщений ----------
