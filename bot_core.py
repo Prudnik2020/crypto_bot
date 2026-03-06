@@ -21,7 +21,8 @@ MEXC_API_KEY = os.getenv("MEXC_API_KEY")
 MEXC_SECRET = os.getenv("MEXC_SECRET")
 
 # ---------- Настройки сканера ----------
-SPREAD_THRESHOLD = 1.0  # теперь 1%
+SPREAD_THRESHOLD = 1.0                # минимальный спред для показа
+MAX_SPREAD = 1000.0                    # максимальный спред (чтобы убрать аномалии)
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
@@ -113,12 +114,13 @@ def get_auto_scan_users():
     return rows
 
 # ---------- Отправка сообщений ----------
-def send_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
+def send_message(chat_id, text, reply_markup=None, parse_mode="HTML", disable_web_page_preview=False):
     url = f"{TELEGRAM_API_URL}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": parse_mode
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": disable_web_page_preview
     }
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
@@ -269,7 +271,8 @@ def scan_market():
 
         possible, network = check_transfer_possible('kucoin', 'mexc', symbol)
 
-        if possible and spread_kucoin_to_mexc > SPREAD_THRESHOLD:
+        # Добавляем только если спред в пределах [THRESHOLD, MAX_SPREAD]
+        if possible and SPREAD_THRESHOLD < spread_kucoin_to_mexc <= MAX_SPREAD:
             opportunities.append({
                 'pair': symbol,
                 'spread': round(spread_kucoin_to_mexc, 2),
@@ -280,7 +283,7 @@ def scan_market():
                 'sell_price': price_mexc,
                 'volume': kucoin['volume']
             })
-        elif possible and spread_mexc_to_kucoin > SPREAD_THRESHOLD:
+        elif possible and SPREAD_THRESHOLD < spread_mexc_to_kucoin <= MAX_SPREAD:
             opportunities.append({
                 'pair': symbol,
                 'spread': round(spread_mexc_to_kucoin, 2),
@@ -295,7 +298,7 @@ def scan_market():
     opportunities.sort(key=lambda x: x['spread'], reverse=True)
     return opportunities
 
-# ---------- Форматирование сообщения (ссылки, как просили) ----------
+# ---------- Форматирование сообщения (ссылки, без баннера) ----------
 def format_message(opportunities):
     if not opportunities:
         return None
@@ -311,11 +314,9 @@ def format_message(opportunities):
         sell_price = opp['sell_price']
         volume = opp.get('volume', 0)
 
-        # Получаем ссылки
         buy_link = EXCHANGES[buy_ex]['url'].format(pair.split('/')[0])
         sell_link = EXCHANGES[sell_ex]['url'].format(pair.split('/')[0])
 
-        # Названия для отображения
         buy_name = "KuCoin" if buy_ex == 'kucoin' else "MEXC"
         sell_name = "KuCoin" if sell_ex == 'kucoin' else "MEXC"
 
@@ -427,7 +428,8 @@ def cmd_manual_scan(chat_id, user_id):
     if not text:
         send_message(chat_id, "🙁 Вилок с открытыми сетями сейчас нет.")
     else:
-        send_message(chat_id, text)
+        # Отключаем предпросмотр ссылок, чтобы убрать баннер
+        send_message(chat_id, text, disable_web_page_preview=True)
 
 def cmd_buy(chat_id):
     markup = get_payment_keyboard()
