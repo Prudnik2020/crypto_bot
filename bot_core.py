@@ -20,14 +20,14 @@ ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip()] if A
 MEXC_API_KEY = os.getenv("MEXC_API_KEY")
 MEXC_SECRET = os.getenv("MEXC_SECRET")
 
-# API-ключи KuCoin (не обязательны для текущей логики, но оставлены для будущего)
+# API-ключи KuCoin (оставим, но они не используются для проверки сетей)
 KUCOIN_API_KEY = os.getenv("KUCOIN_API_KEY")
 KUCOIN_SECRET = os.getenv("KUCOIN_SECRET")
 KUCOIN_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE")
 
 # ---------- Настройки сканера ----------
 SPREAD_THRESHOLD = 1.0
-MAX_SPREAD = 15.0
+MAX_SPREAD = 30.0
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
@@ -165,7 +165,7 @@ def get_payment_keyboard():
         ]
     }
 
-# ---------- Нормализация названий сетей ----------
+# ---------- Нормализация названий сетей (для отображения) ----------
 def normalize_network(name):
     name = str(name).upper().replace("-", "").replace("_", "").replace(" ", "")
     synonyms = {
@@ -181,79 +181,10 @@ def normalize_network(name):
     }
     return synonyms.get(name, name)
 
-# ---------- Получение активных сетей с KuCoin (публичный эндпоинт) ----------
-def fetch_kucoin_active_networks():
-    """Возвращает словарь {валюта: [список активных сетей]} для KuCoin"""
-    url = "https://api.kucoin.com/api/v3/currencies"
-    try:
-        resp = requests.get(url, timeout=15)
-        data = resp.json()
-        if data.get('code') == '200000':
-            result = {}
-            for item in data['data']:
-                currency = item['currency']
-                active_nets = []
-                for chain in item.get('chains', []):
-                    if chain.get('isDepositEnabled') and chain.get('isWithdrawEnabled'):
-                        net_name = normalize_network(chain['chainName'])
-                        active_nets.append(net_name)
-                if active_nets:
-                    result[currency] = active_nets
-            logging.info(f"KuCoin: загружено {len(result)} валют с активными сетями")
-            return result
-        else:
-            logging.error(f"KuCoin API error: {data}")
-    except Exception as e:
-        logging.error(f"Ошибка получения сетей KuCoin: {e}")
-    return {}
-
-# ---------- Получение активных сетей с MEXC (через ccxt) ----------
-def fetch_mexc_active_networks():
-    """Возвращает словарь {валюта: [список активных сетей]} для MEXC"""
-    try:
-        mexc = EXCHANGES['mexc']['inst']
-        currencies = mexc.fetch_currencies()
-        result = {}
-        for code, data in currencies.items():
-            active_nets = []
-            if 'networks' in data:
-                for net_name, net_data in data['networks'].items():
-                    if net_data.get('deposit', {}).get('enabled') and net_data.get('withdraw', {}).get('enabled'):
-                        active_nets.append(normalize_network(net_name))
-            if active_nets:
-                result[code] = active_nets
-        logging.info(f"MEXC: загружено {len(result)} валют с активными сетями")
-        return result
-    except Exception as e:
-        logging.error(f"Ошибка получения сетей MEXC: {e}")
-        return {}
-
-# ---------- Глобальный словарь активных сетей ----------
-active_networks = {
-    'kucoin': {},
-    'mexc': {}
-}
-
-def update_active_networks():
-    """Обновляет данные об активных сетях для обеих бирж"""
-    global active_networks
-    active_networks['kucoin'] = fetch_kucoin_active_networks()
-    active_networks['mexc'] = fetch_mexc_active_networks()
-    logging.info("Данные об активных сетях обновлены")
-
-# Вызываем при старте
-update_active_networks()
-
-# ---------- Проверка возможности перевода с учётом реально работающих сетей ----------
+# ---------- Функция проверки перевода (всегда True, сеть "?") ----------
 def check_transfer_possible(buy_ex, sell_ex, symbol):
-    base = symbol.split('/')[0]
-    buy_nets = active_networks.get(buy_ex, {}).get(base, [])
-    sell_nets = active_networks.get(sell_ex, {}).get(base, [])
-    common = set(buy_nets) & set(sell_nets)
-    if common:
-        # Возвращаем первую общую сеть
-        return True, list(common)[0]
-    return False, None
+    # Временно отключаем проверку сетей
+    return True, "?"
 
 # ---------- Получение цен с бирж ----------
 def fetch_prices(exchange_name, exchange):
@@ -327,7 +258,7 @@ def scan_market():
     opportunities.sort(key=lambda x: x['spread'], reverse=True)
     return opportunities
 
-# ---------- Форматирование сообщения (точно как в старом коде) ----------
+# ---------- Форматирование сообщения (точь-в-точь как в старом коде) ----------
 def format_message(opportunities):
     if not opportunities:
         return None
