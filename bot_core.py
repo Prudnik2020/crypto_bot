@@ -149,13 +149,25 @@ def get_main_keyboard():
     ]
 
 def get_payment_keyboard():
-    sbp_link = "https://www.sberbank.ru/ru/choise_bank?requisiteNumber=79093545631&bankCode=100000000111"
     return {
         "inline_keyboard": [
-            [{"text": "💳 Оплатить через СБП", "url": sbp_link}],
             [{"text": "✅ Я оплатил (проверить)", "callback_data": "check_payment"}]
         ]
     }
+
+def cmd_buy(chat_id):
+    markup = get_payment_keyboard()
+    send_message(
+        chat_id,
+        "🔥 <b>Оплата доступа к боту</b>\n\n"
+        "💰 Стоимость: <b>2000₽/месяц</b>\n"
+        "💳 Номер карты Сбербанк (МИР):\n"
+        "<code>2202 2008 6542 7262</code>\n\n"
+        "👉 Переведите указанную сумму на эту карту.\n"
+        "После перевода нажмите кнопку «✅ Я оплатил» и пришлите скриншот подтверждения.\n\n"
+        "Администратор проверит и активирует доступ вручную.",
+        reply_markup=markup
+    )
 
 # ---------- Функции для работы с сетями ----------
 def normalize_network(name):
