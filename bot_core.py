@@ -26,7 +26,7 @@ KUCOIN_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE")
 
 # ---------- Настройки сканера ----------
 SPREAD_THRESHOLD = 1.0
-MAX_SPREAD = 15.0
+MAX_SPREAD = 15.0  # Изменено на 15%
 MIN_VOLUME = 1000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
@@ -217,7 +217,6 @@ def fetch_mexc_active_networks():
     try:
         mexc = EXCHANGES['mexc']['inst']
         currencies = mexc.fetch_currencies()
-        # Проверяем, что currencies - это словарь
         if not isinstance(currencies, dict):
             logging.error(f"MEXC fetch_currencies вернул не словарь: {type(currencies)}")
             return {}
@@ -229,15 +228,26 @@ def fetch_mexc_active_networks():
             networks = data.get('networks')
             if isinstance(networks, dict):
                 for net_name, net_data in networks.items():
-                    if isinstance(net_data, dict):
-                        # Проверяем, что deposit и withdraw - словари с полем enabled
-                        deposit = net_data.get('deposit', {})
-                        withdraw = net_data.get('withdraw', {})
-                        if isinstance(deposit, dict) and isinstance(withdraw, dict):
-                            if deposit.get('enabled') and withdraw.get('enabled'):
-                                norm_net = normalize_network(net_name)
-                                if norm_net:
-                                    active_nets.append(norm_net)
+                    if not isinstance(net_data, dict):
+                        continue
+                    deposit = net_data.get('deposit')
+                    withdraw = net_data.get('withdraw')
+                    # deposit и withdraw могут быть словарями или булевыми значениями
+                    # В ccxt для MEXC они обычно словари с полем 'enabled'
+                    deposit_ok = False
+                    withdraw_ok = False
+                    if isinstance(deposit, dict):
+                        deposit_ok = deposit.get('enabled', False)
+                    elif isinstance(deposit, bool):
+                        deposit_ok = deposit
+                    if isinstance(withdraw, dict):
+                        withdraw_ok = withdraw.get('enabled', False)
+                    elif isinstance(withdraw, bool):
+                        withdraw_ok = withdraw
+                    if deposit_ok and withdraw_ok:
+                        norm_net = normalize_network(net_name)
+                        if norm_net:
+                            active_nets.append(norm_net)
             if active_nets:
                 result[code] = active_nets
         logging.info(f"MEXC: загружено {len(result)} валют с активными сетями")
