@@ -364,7 +364,7 @@ def format_message(opportunities):
     if not opportunities:
         return None
 
-    lines = ["💰 ТОП-7 Возможностей (Вывод открыт:)\n"]
+    lines = ["🔥 <b>ТОП-7 Возможностей (Вывод открыт:)</b>\n"]
     for opp in opportunities[:7]:
         pair = opp['pair']
         spread = opp['spread']
@@ -381,17 +381,15 @@ def format_message(opportunities):
         buy_name = "kucoin" if buy_ex == 'kucoin' else "mexc"
         sell_name = "kucoin" if sell_ex == 'kucoin' else "mexc"
 
-        # Форматирование цен
         buy_price_str = f"{buy_price:.6f}".rstrip('0').rstrip('.') if buy_price < 1 else f"{buy_price:.3f}".rstrip('0').rstrip('.')
         sell_price_str = f"{sell_price:.6f}".rstrip('0').rstrip('.') if sell_price < 1 else f"{sell_price:.3f}".rstrip('0').rstrip('.')
-
         volume_str = f"{volume:,.0f}"
 
         line = (
-            f"💰 {pair} (Vol: ${volume_str})\n"
+            f"💰 <b>{pair}</b> (Vol: ${volume_str})\n"
             f"🔹 Купить: <a href='{buy_link}'>{buy_name}</a> ({buy_price_str})\n"
             f"🔸 Продать: <a href='{sell_link}'>{sell_name}</a> ({sell_price_str})\n"
-            f"📈 Спред: {spread}%\n"
+            f"📈 <b>Спред: {spread}%</b>\n"
             f"🔄 ✅ Сеть: {network}\n"
             f"───────────────\n"
         )
