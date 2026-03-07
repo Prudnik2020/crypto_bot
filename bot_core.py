@@ -27,7 +27,7 @@ KUCOIN_PASSPHRASE = os.getenv("KUCOIN_PASSPHRASE")
 # ---------- Настройки сканера ----------
 SPREAD_THRESHOLD = 1.0
 MAX_SPREAD = 15.0  # Изменено на 15%
-MIN_VOLUME = 1000
+MIN_VOLUME = 10000
 BLACKLIST = ['USDC/USDT', 'USDD/USDT', 'BUSD/USDT', 'DAI/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'X/USDT']
 
 # ---------- Биржи и шаблоны ссылок ----------
