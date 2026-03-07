@@ -201,6 +201,7 @@ def get_main_keyboard():
         ["▶️ Авто-скан (1 мин)", "▶️ Авто-скан (5 мин)"],
         ["⏹ Стоп сканирование"],
         ["📊 Статус"]
+        ["📞 Поддержка"]   # новая кнопка
     ]
 
 def get_payment_keyboard():
@@ -483,6 +484,8 @@ def handle_update(update_json):
             cmd_stop_auto(chat_id, user_id)
         elif text == "📊 Статус":
             cmd_status(chat_id, user_id)
+        elif text == "📞 Поддержка":
+            send_message(chat_id, "👨‍💻 По всем вопросам обращайтесь к @Prudnik2019")
         elif msg.get('photo'):
             handle_photo(chat_id, user_id, username, msg)
         else:
